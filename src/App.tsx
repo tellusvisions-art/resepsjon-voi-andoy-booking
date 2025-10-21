@@ -10,7 +10,9 @@ const fmt = (d: string | Date) =>
   new Date(d).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/Oslo";
 
-function generateSlots(open = "09:00", close = "17:00", stepMin = 25): string[] {
+
+function generateSlots(open = "09:00", close = "17:00", stepMin = 20): string[] {
+
   const [oh, om] = open.split(":").map(Number);
   const [ch, cm] = close.split(":").map(Number);
   const start = oh * 60 + om;
@@ -51,7 +53,9 @@ const readBookings = () => {
 };
 const writeBookings = (arr: any[]) => localStorage.setItem(LS_KEY, JSON.stringify(arr));
 
-const SERVICES = [{ id: "consult", name: "Konsultasjon", durationMin: 25 }] as const;
+
+const SERVICES = [{ id: "consult", name: "Konsultasjon", durationMin: 20 }] as const;
+
 
 function windowFor(dateISO: string) {
   const d = new Date(dateISO + "T12:00:00");
@@ -198,7 +202,9 @@ function confirmLabel(rec: any) {
   const takenKeys = useMemo(() => new Set(bookings.map((b) => toKey(b.date, b.time))), [bookings]);
   const availableSlots = useMemo(() => {
     if (!win.allowed) return [] as string[];
-    const slots = generateSlots(win.open, win.close, 25);
+
+const slots = generateSlots(win.open, win.close, 20);
+
     return slots.filter((t) => !takenKeys.has(toKey(date, t)) && !isPastSlot(date, t));
   }, [win, takenKeys, date]);
 
@@ -291,33 +297,66 @@ setModalOpen(true);
     }
   }
 
-  function downloadICS(b: any) {
-    const start = new Date(`${b.date}T${b.time}:00`);
-    const end = new Date(start.getTime() + b.durationMin * 60000);
-    const toICSDate = (d: Date) => d.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
-    const ics = [
-      "BEGIN:VCALENDAR",
-      "VERSION:2.0",
-      "PRODID:-//Appointment Demo//EN",
-      "BEGIN:VEVENT",
-      `UID:${b.id}@demo.local`,
-      `DTSTAMP:${toICSDate(new Date())}`,
-      `DTSTART:${toICSDate(start)}`,
-      `DTEND:${toICSDate(end)}`,
-      `SUMMARY:${b.serviceName} – ${b.name}`,
-      `DESCRIPTION:Sted: ${b.location}\\nKontakt: ${b.email} / ${b.phone}\\nNotat: ${b.note || "" }`,
-      "END:VEVENT",
-      "END:VCALENDAR",
-    ].join("\\n");
-    const blob = new Blob([ics], { type: "text/calendar" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `booking_${b.date}_${b.time}.ics`;
-    a.click();
-    URL.revokeObjectURL(url);
+function downloadICS(b: any) {
+  const start = new Date(`${b.date}T${b.time}:00`);
+  const end = new Date(start.getTime() + b.durationMin * 60000);
+  const toICSDate = (d: Date) => d.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
+
+  // ICS med CRLF og tydelig LOCATION/DESCRIPTION
+  const ics = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "CALSCALE:GREGORIAN",
+    "METHOD:PUBLISH",
+    "PRODID:-//Appointment Demo//EN",
+    "BEGIN:VEVENT",
+    `UID:${b.id}@demo.local`,
+    `DTSTAMP:${toICSDate(new Date())}`,
+    `DTSTART:${toICSDate(start)}`,
+    `DTEND:${toICSDate(end)}`,
+    `SUMMARY:${b.serviceName} – ${b.name}`,
+    `LOCATION:${b.location || ""}`,
+    "DESCRIPTION:" + [
+      `Sted: ${b.location || ""}`,
+      `Kontakt: ${b.email} / ${b.phone}`,
+      b.note ? `Notat: ${b.note}` : "",
+    ].filter(Boolean).join("\\n"),
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ].join("\r\n");
+
+  const filename = `booking_${b.date}_${b.time}.ics`;
+  const file = new File([ics], filename, { type: "text/calendar;charset=utf-8" });
+
+  // 1) Mobil: prøv Web Share (åpner “Del”-arket – ofte med Kalender)
+  // iOS/Android støtter dette i nyere nettlesere.
+  // @ts-ignore - type guard for canShare with files
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    // @ts-ignore
+    navigator.share({
+      files: [file],
+      title: "Legg i kalender",
+      text: "Åpne denne for å legge til i kalenderen.",
+    }).catch(() => {
+      // hvis bruker avbryter deling -> fall back
+      const url = URL.createObjectURL(file);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+    return;
   }
 
+  // 2) Desktop / fallback: vanlig nedlasting til “Nedlastinger”
+  const url = URL.createObjectURL(file);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
   return (
     <div className="min-h-screen bg-gradient-to-b from-white to-slate-50">
       <header className="sticky top-0 z-10 backdrop-blur bg-white/70 border-b">
@@ -510,19 +549,19 @@ setModalOpen(true);
                     <CheckCircle2 className="h-5 w-5 text-emerald-600 mt-0.5" />
                     <div>
                       <h3 className="font-semibold">Time bekreftet!</h3>
-                      <p className="text-sm text-slate-700">
-                        {confirm.serviceName} – {confirm.location} den {fmt(confirm.date)} kl.{" "}
-                        {confirm.time} ({confirm.durationMin} min). Bestillingen er lagret lokalt.
-                        Hvis du vil, kan du laste ned filen og legge den i kalenderen din for å
-                        huske (Google Kalender, Outlook, Apple Kalender).
-                      </p>
+                   <p className="text-sm text-slate-700">
+  {confirm.serviceName} – {confirm.location} den {fmt(confirm.date)} kl.{" "}
+  {confirm.time} ({confirm.durationMin} min). Bestillingen er lagret. Du kan nå laste ned timen.
+</p>
+
                       <div className="flex gap-2 mt-3">
                         <button
                           onClick={() => downloadICS(confirm)}
                           className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 hover:bg-white"
                         >
-                          <Download className="h-4 w-4" />
-                          Legg i kalender (.ics)
+                         <Download className="h-4 w-4" />
+Last ned timen
+
                         </button>
                       </div>
                     </div>
@@ -571,10 +610,7 @@ setModalOpen(true);
                 <ol className="list-decimal list-inside text-sm space-y-1 text-slate-700">
                   <li>Velg dato og ledig tidspunkt.</li>
                   <li>Velg tjeneste og fyll inn kontaktinfo.</li>
-                  <li>
-                    Trykk «Bestill time». Hvis du vil, kan du laste ned filen og legge den i
-                    kalenderen din for å huske (Google Kalender, Outlook, Apple Kalender).
-                  </li>
+                  <li>Trykk «Bestill time». Deretter kan du laste ned timen.</li>
                 </ol>
               </div>
             </div>
@@ -750,12 +786,12 @@ setModalOpen(true);
 
 
       {/* Modal (må være inne i return) */}
-      <BookingConfirmationModal
-        open={modalOpen}
-        onClose={() => setModalOpen(false)}
-        timeLabel={confirmLabel(confirm)}
-        onDownloadIcs={() => confirm && downloadICS(confirm)}
-      />
+     <BookingConfirmationModal
+  open={modalOpen}
+  onClose={() => setModalOpen(false)}
+  timeLabel={confirmLabel(confirm)}
+  onDownloadIcs={() => confirm && downloadICS(confirm)}
+/>
     </div>
   );
 }
